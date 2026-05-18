@@ -1,16 +1,35 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
-    />
-    <meta name="description" content="Chrome offline T-Rex runner, ported to Vite + TypeScript." />
-    <title>T-Rex Runner</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="T-Rex AI — Algoritmo Genético + Red Neuronal en tiempo real" />
+    <title>T-Rex AI — Dino Neural Evolution</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet" />
   </head>
   <body>
+
+    <!-- Juego del dino -->
     <main id="game"></main>
+
+    <!-- Panel de la red neuronal -->
+    <aside id="nn-panel">
+      <div id="nn-header">
+        <span id="nn-gen">GEN 1</span>
+        <span id="nn-alive">VIVOS 200</span>
+      </div>
+
+      <!-- Canvas donde se dibuja la red neuronal en tiempo real -->
+      <canvas id="nn-canvas" width="600" height="200"></canvas>
+
+      <div id="nn-footer">
+        <span class="nn-tag">tanh × 2 capas ocultas</span>
+        <span class="nn-tag">5 entradas · 8 · 6 · 2 salidas</span>
+        <span class="nn-key">R → reiniciar</span>
+      </div>
+    </aside>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

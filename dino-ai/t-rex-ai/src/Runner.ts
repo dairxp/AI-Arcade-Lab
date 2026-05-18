@@ -5,23 +5,23 @@ import {
   DEFAULT_WIDTH,
   EVENTS,
   FPS,
-  IS_MOBILE,
-  KEYCODES,
   RUNNER_CONFIG
 } from './constants';
 import { DistanceMeter } from './DistanceMeter';
-import { GameOverPanel } from './GameOverPanel';
 import { Horizon } from './Horizon';
 import { Trex } from './Trex';
 import { checkForCollision } from './collision';
 import { loadSpriteImage, sprite } from './sprite';
 import type { Dimensions } from './types';
-import { getTimeStamp, vibrate } from './utils';
+import { getTimeStamp } from './utils';
+import { GeneticAlgorithm, DinoBrain } from './ai/GeneticAlgorithm';
+import { NeuralNetworkVisualizer } from './ai/NeuralNetworkVisualizer';
+
+const POPULATION = 200;
 
 export class Runner implements EventListenerObject {
   private outerContainerEl: HTMLElement;
   private containerEl!: HTMLElement;
-  private touchController?: HTMLElement;
 
   private canvas!: HTMLCanvasElement;
   private canvasCtx!: CanvasRenderingContext2D;
@@ -30,10 +30,24 @@ export class Runner implements EventListenerObject {
   private config = RUNNER_CONFIG;
   private msPerFrame = 1000 / FPS;
 
-  private tRex!: Trex;
+  // ── IA ───────────────────────────────────────────────────────────────────
+  private ga: GeneticAlgorithm = new GeneticAlgorithm(POPULATION);
+  private activeBrains: DinoBrain[] = [];
+  private tRexes: Trex[] = [];
+  private alive: boolean[] = [];
+  private survivalTime: number[] = [];
+  private obstaclesPassed: number[] = [];
+  private lastObstacleRight: number = 9999;
+
+  /** Visualizador de la red neuronal */
+  private visualizer!: NeuralNetworkVisualizer;
+  /** Último conjunto de inputs/outputs del mejor dino vivo (para visualizar) */
+  private lastInputs: number[] = [0, 0, 0, 0, 0];
+  private lastOutputs: number[] = [0, 0];
+
+  // ── Estado del juego ─────────────────────────────────────────────────────
   private horizon!: Horizon;
   private distanceMeter!: DistanceMeter;
-  private gameOverPanel: GameOverPanel | null = null;
 
   private currentSpeed: number = RUNNER_CONFIG.SPEED;
   private distanceRan = 0;
@@ -43,16 +57,9 @@ export class Runner implements EventListenerObject {
   private raqId = 0;
   private updatePending = false;
 
-  private activated = false;
-  private playing = false;
-  private crashed = false;
-  private paused = false;
-  private playingIntro = false;
   private inverted = false;
   private invertTimer = 0;
   private invertTrigger = false;
-  private playCount = 0;
-
   private resizeTimerId: number | null = null;
 
   constructor(outerContainerId: string) {
@@ -69,39 +76,293 @@ export class Runner implements EventListenerObject {
 
   private init(): void {
     this.adjustDimensions();
-    this.setSpeed();
 
     this.containerEl = document.createElement('div');
     this.containerEl.className = CLASSES.CONTAINER;
+    this.containerEl.style.width = `${this.dimensions.WIDTH}px`;
+    this.containerEl.style.height = `${this.dimensions.HEIGHT}px`;
 
     this.canvas = createCanvas(this.containerEl, this.dimensions.WIDTH, this.dimensions.HEIGHT);
     this.canvasCtx = getContext(this.canvas);
-    this.canvasCtx.fillStyle = '#f7f7f7';
-    this.canvasCtx.fill();
     updateCanvasScaling(this.canvas);
 
-    this.horizon = new Horizon(this.canvas, sprite.set, this.dimensions, this.config.GAP_COEFFICIENT);
+    this.horizon = new Horizon(
+      this.canvas,
+      sprite.set,
+      this.dimensions,
+      this.config.GAP_COEFFICIENT
+    );
     this.distanceMeter = new DistanceMeter(
       this.canvas,
       sprite.set.TEXT_SPRITE,
       this.dimensions.WIDTH
     );
-    this.tRex = new Trex(this.canvas, sprite.set.TREX);
 
     this.outerContainerEl.appendChild(this.containerEl);
+    document.body.classList.add(CLASSES.ARCADE_MODE);
 
-    if (IS_MOBILE) this.createTouchController();
-
-    this.startListening();
-    this.update();
+    // Conectar visualizador de la red neuronal
+    // Ajusta la resolución interna del canvas a su tamaño real en pantalla
+    const nnCanvas = document.getElementById('nn-canvas') as HTMLCanvasElement | null;
+    if (nnCanvas) {
+      const rect = nnCanvas.getBoundingClientRect();
+      if (rect.width > 0) {
+        nnCanvas.width  = Math.floor(rect.width);
+        nnCanvas.height = Math.floor(rect.height);
+      }
+      this.visualizer = new NeuralNetworkVisualizer(nnCanvas);
+    }
 
     window.addEventListener(EVENTS.RESIZE, this.debounceResize);
+    document.addEventListener(EVENTS.KEYDOWN, this);
+
+    this.startNewGeneration();
   }
 
-  private createTouchController(): void {
-    this.touchController = document.createElement('div');
-    this.touchController.className = CLASSES.TOUCH_CONTROLLER;
-    this.outerContainerEl.appendChild(this.touchController);
+  private stopLoop(): void {
+    if (this.raqId) {
+      cancelAnimationFrame(this.raqId);
+      this.raqId = 0;
+    }
+    this.updatePending = false;
+  }
+
+  private startNewGeneration(): void {
+    this.stopLoop();
+
+    this.activeBrains = this.ga.dinos;
+    this.tRexes = [];
+    this.alive = [];
+    this.survivalTime = [];
+    this.obstaclesPassed = [];
+    this.lastObstacleRight = 9999;
+
+    for (let i = 0; i < POPULATION; i++) {
+      const t = new Trex(this.canvas, sprite.set.TREX);
+      t.update(0, 'RUNNING');
+      this.tRexes.push(t);
+      this.alive.push(true);
+      this.survivalTime.push(0);
+      this.obstaclesPassed.push(0);
+    }
+
+    this.distanceRan = 0;
+    this.runningTime = 0;
+    this.currentSpeed = this.config.SPEED;
+    this.time = getTimeStamp();
+    this.invertTimer = 0;
+    this.invertTrigger = false;
+    this.invert(true);
+
+    // Actualiza header del panel
+    this.updatePanelHeader(POPULATION);
+
+    this.scheduleNextUpdate();
+  }
+
+  private update(): void {
+    this.updatePending = false;
+
+    const now = getTimeStamp();
+    const deltaTime = now - (this.time || now);
+    this.time = now;
+
+    this.canvasCtx.clearRect(0, 0, this.dimensions.WIDTH, this.dimensions.HEIGHT);
+
+    const hasObstacles = this.runningTime > 3000;
+    this.horizon.update(deltaTime, this.currentSpeed, hasObstacles, this.inverted);
+
+    const closestObstacle = this.horizon.obstacles[0] ?? null;
+
+    // Detecta si el obstáculo pasó al dino (para el bonus de obstáculo)
+    const obstacleRight = closestObstacle
+      ? closestObstacle.xPos + closestObstacle.width
+      : 9999;
+
+    if (obstacleRight < 40 && this.lastObstacleRight >= 40) {
+      for (let i = 0; i < POPULATION; i++) {
+        if (this.alive[i]) this.obstaclesPassed[i]++;
+      }
+    }
+    this.lastObstacleRight = obstacleRight;
+
+    let aliveCount = 0;
+    /** Índice del dino vivo con el mayor survivalTime (el "líder") */
+    let leaderIdx = -1;
+    let leaderTime = -1;
+
+    for (let i = 0; i < POPULATION; i++) {
+      if (!this.alive[i]) continue;
+
+      const tRex = this.tRexes[i]!;
+      const brain = this.activeBrains[i]!;
+
+      if (tRex.jumping) tRex.updateJump(deltaTime);
+
+      // ── Red Neuronal: decide la acción ──────────────────────────────────
+      let inputs: number[] = [0, 0, 0, 0, 0];
+      let output: number[] = [0, 0];
+
+      if (hasObstacles && closestObstacle) {
+        let target = closestObstacle;
+        if (
+          target.xPos + target.width < tRex.xPos &&
+          this.horizon.obstacles[1]
+        ) {
+          target = this.horizon.obstacles[1];
+        }
+
+        inputs = [
+          Math.max(0, target.xPos - tRex.xPos) / this.dimensions.WIDTH, // Distancia
+          target.width / 150,                                              // Ancho
+          target.typeConfig.height / 100,                                  // Altura
+          tRex.yPos / this.dimensions.HEIGHT,                              // Pos Y
+          this.currentSpeed / this.config.MAX_SPEED                        // Velocidad
+        ];
+
+        output = brain.brain.predict(inputs);
+
+        if (output[0]! > 0.5 && !tRex.jumping && !tRex.ducking) {
+          tRex.startJump(this.currentSpeed);
+        } else if (output[1]! > 0.5) {
+          if (tRex.jumping) tRex.setSpeedDrop();
+          else if (!tRex.ducking) tRex.setDuck(true);
+        } else {
+          tRex.speedDrop = false;
+          if (tRex.ducking) tRex.setDuck(false);
+        }
+      }
+      // ────────────────────────────────────────────────────────────────────
+
+      const collision =
+        hasObstacles &&
+        closestObstacle !== null &&
+        checkForCollision(closestObstacle, tRex);
+
+      if (collision) {
+        tRex.update(100, 'CRASHED');
+        this.alive[i] = false;
+
+        // ── Sistema de recompensas ────────────────────────────────────────
+        // Recompensa = distancia + bonus por cada obstáculo superado + tiempo
+        const score = this.distanceRan
+          + this.obstaclesPassed[i]! * 500
+          + this.survivalTime[i]! * 0.1;
+        brain.score = score;
+        this.ga.savedDinos.push(brain);
+      } else {
+        tRex.update(deltaTime);
+        this.survivalTime[i]! += deltaTime;
+        aliveCount++;
+
+        // Determina el líder (el que más tiempo lleva vivo)
+        if (this.survivalTime[i]! > leaderTime) {
+          leaderTime = this.survivalTime[i]!;
+          leaderIdx = i;
+          this.lastInputs = inputs;
+          this.lastOutputs = output;
+        }
+      }
+    }
+
+    // ── HUD mínimo (solo info que el juego NO muestra) ────────────────────
+    this.drawHUD(aliveCount);
+
+    // ── Actualiza visualizador de la red neuronal ─────────────────────────
+    if (leaderIdx >= 0 && this.visualizer) {
+      const leaderBrain = this.activeBrains[leaderIdx]!;
+      this.visualizer.draw(leaderBrain.brain, this.lastInputs, this.lastOutputs);
+    }
+
+    // Actualiza el header del panel
+    this.updatePanelHeader(aliveCount);
+
+    // Avanza el juego
+    this.runningTime += deltaTime;
+    this.distanceRan += (this.currentSpeed * deltaTime) / this.msPerFrame;
+    if (this.currentSpeed < this.config.MAX_SPEED) {
+      this.currentSpeed += this.config.ACCELERATION;
+    }
+    this.distanceMeter.update(deltaTime, Math.ceil(this.distanceRan));
+    this.updateInvertMode();
+
+    // ── ¿Todos muertos? → Evolución ──────────────────────────────────────
+    if (aliveCount === 0) {
+      if (this.distanceRan > this.highestScore) {
+        this.highestScore = Math.ceil(this.distanceRan);
+        this.distanceMeter.setHighScore(this.highestScore);
+      }
+      this.horizon.reset();
+      this.ga.nextGeneration();
+      this.startNewGeneration();
+      return;
+    }
+
+    this.scheduleNextUpdate();
+  }
+
+  /** HUD mínimo dentro del canvas: solo GEN y VIVOS (sin duplicar HI/score) */
+  private drawHUD(aliveCount: number): void {
+    const ctx = this.canvasCtx;
+    ctx.save();
+    ctx.fillStyle = this.inverted ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.06)';
+    ctx.fillRect(5, 5, 105, 42);
+
+    ctx.fillStyle = this.inverted ? '#ccc' : '#444';
+    ctx.font = 'bold 10px monospace';
+    ctx.fillText(`GEN:   ${this.ga.generation}`, 10, 20);
+
+    // Barra de supervivencia
+    const progress = aliveCount / POPULATION;
+    ctx.fillStyle = this.inverted ? 'rgba(180,180,180,0.3)' : 'rgba(0,0,0,0.1)';
+    ctx.fillRect(10, 26, 90, 5);
+    ctx.fillStyle = progress > 0.5 ? '#4caf50' : progress > 0.2 ? '#ff9800' : '#f44336';
+    ctx.fillRect(10, 26, 90 * progress, 5);
+
+    ctx.fillStyle = this.inverted ? '#aaa' : '#555';
+    ctx.font = '9px monospace';
+    ctx.fillText(`${aliveCount}/${POPULATION} vivos`, 10, 42);
+
+    ctx.restore();
+  }
+
+  private updatePanelHeader(aliveCount: number): void {
+    const genEl = document.getElementById('nn-gen');
+    const aliveEl = document.getElementById('nn-alive');
+    if (genEl) genEl.textContent = `GEN ${this.ga.generation}`;
+    if (aliveEl) aliveEl.textContent = `VIVOS ${aliveCount}`;
+  }
+
+  private updateInvertMode(): void {
+    if (this.invertTimer > this.config.INVERT_FADE_DURATION) {
+      this.invertTimer = 0;
+      this.invertTrigger = false;
+      this.invert(false);
+    } else if (this.invertTimer) {
+      this.invertTimer += 16;
+    } else {
+      const actualDistance = this.distanceMeter.getActualDistance(Math.ceil(this.distanceRan));
+      if (actualDistance > 0) {
+        this.invertTrigger = !(actualDistance % this.config.INVERT_DISTANCE);
+        if (this.invertTrigger && this.invertTimer === 0) {
+          this.invertTimer += 16;
+          this.invert(false);
+        }
+      }
+    }
+  }
+
+  handleEvent(e: Event): void {
+    if (e.type !== EVENTS.KEYDOWN) return;
+    const ke = e as KeyboardEvent;
+    if (ke.code === 'KeyR') {
+      this.stopLoop();
+      this.ga = new GeneticAlgorithm(POPULATION);
+      this.highestScore = 0;
+      this.horizon.reset();
+      this.distanceMeter.reset();
+      this.startNewGeneration();
+    }
   }
 
   private debounceResize = (): void => {
@@ -115,252 +376,18 @@ export class Runner implements EventListenerObject {
       window.clearInterval(this.resizeTimerId);
       this.resizeTimerId = null;
     }
-
     const boxStyles = window.getComputedStyle(this.outerContainerEl);
     const padding = Number.parseFloat(boxStyles.paddingLeft) || 0;
-
     this.dimensions.WIDTH = Math.min(
       DEFAULT_WIDTH,
       this.outerContainerEl.offsetWidth - padding * 2
     );
-
     if (this.canvas) {
       this.canvas.width = this.dimensions.WIDTH;
       this.canvas.height = this.dimensions.HEIGHT;
       updateCanvasScaling(this.canvas);
-
-      this.distanceMeter.calcXPos(this.dimensions.WIDTH);
-      this.clearCanvas();
-      this.horizon.update(0, 0, true);
-      this.tRex.update(0);
-
-      if (this.playing || this.crashed || this.paused) {
-        this.containerEl.style.width = `${this.dimensions.WIDTH}px`;
-        this.containerEl.style.height = `${this.dimensions.HEIGHT}px`;
-        this.distanceMeter.update(0, Math.ceil(this.distanceRan));
-        this.stop();
-      }
-
-      if (this.crashed && this.gameOverPanel) {
-        this.gameOverPanel.updateDimensions(this.dimensions.WIDTH);
-        this.gameOverPanel.draw();
-      }
-    }
-  }
-
-  private setSpeed(optSpeed?: number): void {
-    const speed = optSpeed ?? this.currentSpeed;
-    if (this.dimensions.WIDTH < DEFAULT_WIDTH) {
-      const mobileSpeed =
-        (speed * this.dimensions.WIDTH) / DEFAULT_WIDTH * this.config.MOBILE_SPEED_COEFFICIENT;
-      this.currentSpeed = mobileSpeed > speed ? speed : mobileSpeed;
-    } else if (optSpeed !== undefined) {
-      this.currentSpeed = optSpeed;
-    }
-  }
-
-  private playIntro(): void {
-    if (!this.activated && !this.crashed) {
-      this.playingIntro = true;
-      this.tRex.playingIntro = true;
-
-      const keyframes =
-        '@-webkit-keyframes intro { ' +
-        `from { width:${Trex.config.WIDTH}px }` +
-        `to { width: ${this.dimensions.WIDTH}px }` +
-        '}';
-
-      const sheet = document.createElement('style');
-      sheet.textContent = keyframes;
-      document.head.appendChild(sheet);
-
-      this.containerEl.addEventListener(EVENTS.ANIM_END, () => this.startGame(), { once: true });
-      this.containerEl.style.webkitAnimation = 'intro .4s ease-out 1 both';
       this.containerEl.style.width = `${this.dimensions.WIDTH}px`;
-
-      this.playing = true;
-      this.activated = true;
-    } else if (this.crashed) {
-      this.restart();
     }
-  }
-
-  private startGame(): void {
-    this.setArcadeMode();
-    this.runningTime = 0;
-    this.playingIntro = false;
-    this.tRex.playingIntro = false;
-    this.containerEl.style.webkitAnimation = '';
-    this.playCount++;
-
-    document.addEventListener(EVENTS.VISIBILITY, this.onVisibilityChange);
-    window.addEventListener(EVENTS.BLUR, this.onVisibilityChange);
-    window.addEventListener(EVENTS.FOCUS, this.onVisibilityChange);
-  }
-
-  private clearCanvas(): void {
-    this.canvasCtx.clearRect(0, 0, this.dimensions.WIDTH, this.dimensions.HEIGHT);
-  }
-
-  private update(): void {
-    this.updatePending = false;
-
-    const now = getTimeStamp();
-    let deltaTime = now - (this.time || now);
-    this.time = now;
-
-    if (this.playing) {
-      this.clearCanvas();
-
-      if (this.tRex.jumping) this.tRex.updateJump(deltaTime);
-
-      this.runningTime += deltaTime;
-      const hasObstacles = this.runningTime > this.config.CLEAR_TIME;
-
-      if (this.tRex.jumpCount === 1 && !this.playingIntro) {
-        this.playIntro();
-      }
-
-      if (this.playingIntro) {
-        this.horizon.update(0, this.currentSpeed, hasObstacles);
-      } else {
-        deltaTime = !this.activated ? 0 : deltaTime;
-        this.horizon.update(deltaTime, this.currentSpeed, hasObstacles, this.inverted);
-      }
-
-      const collision =
-        hasObstacles &&
-        this.horizon.obstacles[0] &&
-        checkForCollision(this.horizon.obstacles[0], this.tRex);
-
-      if (!collision) {
-        this.distanceRan += (this.currentSpeed * deltaTime) / this.msPerFrame;
-        if (this.currentSpeed < this.config.MAX_SPEED) {
-          this.currentSpeed += this.config.ACCELERATION;
-        }
-      } else {
-        this.gameOver();
-      }
-
-      this.distanceMeter.update(deltaTime, Math.ceil(this.distanceRan));
-
-      if (this.invertTimer > this.config.INVERT_FADE_DURATION) {
-        this.invertTimer = 0;
-        this.invertTrigger = false;
-        this.invert(false);
-      } else if (this.invertTimer) {
-        this.invertTimer += deltaTime;
-      } else {
-        const actualDistance = this.distanceMeter.getActualDistance(Math.ceil(this.distanceRan));
-        if (actualDistance > 0) {
-          this.invertTrigger = !(actualDistance % this.config.INVERT_DISTANCE);
-          if (this.invertTrigger && this.invertTimer === 0) {
-            this.invertTimer += deltaTime;
-            this.invert(false);
-          }
-        }
-      }
-    }
-
-    if (
-      this.playing ||
-      (!this.activated && this.tRex.blinkCount < RUNNER_CONFIG.MAX_BLINK_COUNT)
-    ) {
-      this.tRex.update(deltaTime);
-      this.scheduleNextUpdate();
-    }
-  }
-
-  handleEvent(e: Event): void {
-    switch (e.type) {
-      case EVENTS.KEYDOWN:
-      case EVENTS.TOUCHSTART:
-      case EVENTS.MOUSEDOWN:
-        this.onKeyDown(e as KeyboardEvent | TouchEvent | MouseEvent);
-        break;
-      case EVENTS.KEYUP:
-      case EVENTS.TOUCHEND:
-      case EVENTS.MOUSEUP:
-        this.onKeyUp(e as KeyboardEvent | TouchEvent | MouseEvent);
-        break;
-    }
-  }
-
-  private startListening(): void {
-    document.addEventListener(EVENTS.KEYDOWN, this);
-    document.addEventListener(EVENTS.KEYUP, this);
-
-    if (IS_MOBILE && this.touchController) {
-      this.touchController.addEventListener(EVENTS.TOUCHSTART, this);
-      this.touchController.addEventListener(EVENTS.TOUCHEND, this);
-      this.containerEl.addEventListener(EVENTS.TOUCHSTART, this);
-    } else {
-      document.addEventListener(EVENTS.MOUSEDOWN, this);
-      document.addEventListener(EVENTS.MOUSEUP, this);
-    }
-  }
-
-  private onKeyDown(e: KeyboardEvent | TouchEvent | MouseEvent): void {
-    if (IS_MOBILE && this.playing) e.preventDefault();
-
-    const isKeyboard = e instanceof KeyboardEvent;
-    const isTouch = e.type === EVENTS.TOUCHSTART;
-    const code = isKeyboard ? e.code : '';
-
-    const isJumpTrigger = (isKeyboard && KEYCODES.JUMP.has(code)) || isTouch;
-
-    if (!this.crashed && isJumpTrigger) {
-      if (!this.playing) {
-        this.playing = true;
-        this.update();
-      }
-      if (!this.tRex.jumping && !this.tRex.ducking) {
-        this.tRex.startJump(this.currentSpeed);
-      }
-    }
-
-    if (this.crashed && isTouch && e.currentTarget === this.containerEl) {
-      this.restart();
-    }
-
-    if (this.playing && !this.crashed && isKeyboard && KEYCODES.DUCK.has(code)) {
-      e.preventDefault();
-      if (this.tRex.jumping) this.tRex.setSpeedDrop();
-      else if (!this.tRex.ducking) this.tRex.setDuck(true);
-    }
-  }
-
-  private onKeyUp(e: KeyboardEvent | TouchEvent | MouseEvent): void {
-    const isKeyboard = e instanceof KeyboardEvent;
-    const code = isKeyboard ? e.code : '';
-    const isJumpKey =
-      (isKeyboard && KEYCODES.JUMP.has(code)) ||
-      e.type === EVENTS.TOUCHEND ||
-      e.type === EVENTS.MOUSEDOWN;
-
-    if (this.isRunning() && isJumpKey) {
-      this.tRex.endJump();
-    } else if (isKeyboard && KEYCODES.DUCK.has(code)) {
-      this.tRex.speedDrop = false;
-      this.tRex.setDuck(false);
-    } else if (this.crashed) {
-      const deltaTime = getTimeStamp() - this.time;
-      if (
-        (isKeyboard && KEYCODES.RESTART.has(code)) ||
-        this.isLeftClickOnCanvas(e) ||
-        (deltaTime >= this.config.GAMEOVER_CLEAR_TIME && isKeyboard && KEYCODES.JUMP.has(code))
-      ) {
-        this.restart();
-      }
-    } else if (this.paused && isJumpKey) {
-      this.tRex.reset();
-      this.play();
-    }
-  }
-
-  private isLeftClickOnCanvas(e: Event): boolean {
-    if (!(e instanceof MouseEvent)) return false;
-    return e.button < 2 && e.type === EVENTS.MOUSEUP && e.target === this.canvas;
   }
 
   private scheduleNextUpdate(): void {
@@ -368,84 +395,6 @@ export class Runner implements EventListenerObject {
     this.updatePending = true;
     this.raqId = requestAnimationFrame(() => this.update());
   }
-
-  private isRunning(): boolean {
-    return Boolean(this.raqId);
-  }
-
-  private gameOver(): void {
-    vibrate(200);
-
-    this.stop();
-    this.crashed = true;
-
-    this.tRex.update(100, 'CRASHED');
-
-    if (!this.gameOverPanel) {
-      this.gameOverPanel = new GameOverPanel(
-        this.canvas,
-        sprite.set.TEXT_SPRITE,
-        sprite.set.RESTART,
-        this.dimensions
-      );
-    } else {
-      this.gameOverPanel.draw();
-    }
-
-    if (this.distanceRan > this.highestScore) {
-      this.highestScore = Math.ceil(this.distanceRan);
-      this.distanceMeter.setHighScore(this.highestScore);
-    }
-
-    this.time = getTimeStamp();
-  }
-
-  private stop(): void {
-    this.playing = false;
-    this.paused = true;
-    cancelAnimationFrame(this.raqId);
-    this.raqId = 0;
-  }
-
-  private play(): void {
-    if (this.crashed) return;
-    this.playing = true;
-    this.paused = false;
-    this.tRex.update(0, 'RUNNING');
-    this.time = getTimeStamp();
-    this.update();
-  }
-
-  restart(): void {
-    if (this.raqId) return;
-    this.playCount++;
-    this.runningTime = 0;
-    this.playing = true;
-    this.crashed = false;
-    this.distanceRan = 0;
-    this.setSpeed(this.config.SPEED);
-    this.time = getTimeStamp();
-    this.containerEl.classList.remove(CLASSES.CRASHED);
-    this.clearCanvas();
-    this.distanceMeter.reset();
-    this.horizon.reset();
-    this.tRex.reset();
-    this.invert(true);
-    this.update();
-  }
-
-  private setArcadeMode(): void {
-    document.body.classList.add(CLASSES.ARCADE_MODE);
-  }
-
-  private onVisibilityChange = (e: Event): void => {
-    if (document.hidden || e.type === 'blur' || document.visibilityState !== 'visible') {
-      this.stop();
-    } else if (!this.crashed) {
-      this.tRex.reset();
-      this.play();
-    }
-  };
 
   private invert(reset: boolean): void {
     if (reset) {
