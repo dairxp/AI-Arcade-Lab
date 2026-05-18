@@ -1,0 +1,107 @@
+# Soldaditos RTS - Configuracion del Juego v2.0
+
+game:
+  map_size: [1200, 800]  # Mapa grande para visualización profesional
+  max_steps: 1000
+
+# Definicion de tipos de unidades (OPTIMIZADO para combate rápido en mapa 1200x800)
+unit_types:
+  soldier:
+    max_health: 100.0
+    speed: 4.0  # Duplicado de 2.0 para engagement más rápido
+    attack_damage: 10.0
+    attack_range: 100.0  # Duplicado de 50.0 para combate más rápido
+    attack_cooldown: 1.0
+    vision_range: 200.0  # Aumentado para ver enemigos más lejos
+    color_modifier: [0, 0, 0]
+
+  tank:
+    max_health: 200.0
+    speed: 2.5  # Aumentado de 1.0 (muy lento)
+    attack_damage: 20.0
+    attack_range: 120.0  # Aumentado de 40.0 (cañón largo)
+    attack_cooldown: 1.5
+    vision_range: 150.0
+    color_modifier: [20, 20, 20]
+
+  scout:
+    max_health: 60.0
+    speed: 6.0  # Aumentado de 3.5 (muy rápido)
+    attack_damage: 5.0
+    attack_range: 110.0  # Aumentado de 60.0 (francotirador)
+    attack_cooldown: 0.8
+    vision_range: 250.0  # MUY largo (explorador)
+    color_modifier: [-20, -20, -20]
+
+# Composicion de unidades por equipo (orden especifico)
+unit_composition:
+  default: ["soldier", "soldier", "tank", "scout", "soldier"]
+
+# Curriculum Learning
+curriculum:
+  enabled: true
+  stages:
+    - name: "Stage 1: Basico 2v2"
+      units_per_team: 2
+      unit_composition: ["soldier", "soldier"]
+      opponent_type: "random"
+      win_rate_threshold: 0.60
+      min_episodes: 100
+
+    - name: "Stage 2: Intermedio 3v3"
+      units_per_team: 3
+      unit_composition: ["soldier", "tank", "soldier"]
+      opponent_type: "pool"
+      win_rate_threshold: 0.60
+      min_episodes: 100
+
+    - name: "Stage 3: Avanzado 4v4"
+      units_per_team: 4
+      unit_composition: ["soldier", "tank", "scout", "soldier"]
+      opponent_type: "self"
+      win_rate_threshold: 0.60
+      min_episodes: 100
+
+    - name: "Stage 4: Experto 5v5"
+      units_per_team: 5
+      unit_composition: ["soldier", "soldier", "tank", "scout", "soldier"]
+      opponent_type: "self"
+      win_rate_threshold: 0.55
+      min_episodes: 100
+
+# Opponent Pool
+opponent_pool:
+  enabled: true
+  max_size: 5
+  save_frequency: 100000  # Guardar cada 100K steps
+  pool_dir: "./models/opponent_pool/"
+
+# Fog of War
+fog_of_war:
+  enabled: true
+  render_fow: true  # Mostrar FOW en visualizacion
+
+# Parametros de entrenamiento PPO
+training:
+  learning_rate: 0.0003
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_range: 0.2
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+
+# Parametros de red neuronal
+network:
+  policy_layers: [256, 256]
+  value_layers: [256, 256]
+
+# Logging y guardado
+logging:
+  tensorboard_log: "./logs/"
+  model_dir: "./models/"
+  save_frequency: 50000
+  verbose: 1

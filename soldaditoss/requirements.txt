@@ -1,0 +1,17 @@
+# Juego y renderizado
+pygame>=2.5.0
+
+# Aprendizaje por refuerzo
+gymnasium>=0.29.0
+stable-baselines3>=2.2.0
+sb3-contrib>=2.2.0
+
+# Utilidades
+numpy>=1.24.0
+matplotlib>=3.7.0
+pyyaml>=6.0
+
+# Monitoreo y logging
+tensorboard>=2.15.0
+tqdm>=4.65.0
+rich>=13.0.0

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pong AI</title>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>Pong AI Arcade</h1>
+        <p id="status-text">Conectando a IA...</p>
+        <div class="controls-bar">
+          <button id="btn-start">Iniciar Juego</button>
+          <button id="btn-pause">Pausar (P)</button>
+          <label style="display: flex; align-items: center; gap: 0.5rem; background: #333; padding: 0 1rem; border-radius: 8px; cursor: pointer;">
+            <input type="checkbox" id="chk-training" style="width: 18px; height: 18px;">
+            Modo Entrenamiento (x10)
+          </label>
+          <div style="background: #2a2a2a; padding: 0.5rem 1rem; border-radius: 8px; font-family: monospace; color: #f1c40f;">
+            <span id="metric-reward">Recompensa: 0.00</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="game-wrapper">
+        <canvas id="gameCanvas"></canvas>
+
+        <!-- Leyenda Lateral Breve -->
+        <div class="legend-sidebar">
+          <div class="legend-section">
+            <h3>Controles</h3>
+            <ul>
+              <li><kbd>W</kbd> Arriba</li>
+              <li><kbd>S</kbd> Abajo</li>
+              <li><kbd>D</kbd> Smash</li>
+              <li><kbd>P</kbd> Pausar</li>
+            </ul>
+          </div>
+          <div class="legend-section">
+            <h3>Poderes</h3>
+            <ul class="powerup-list">
+              <li><span class="box yellow"></span> Gigantismo</li>
+              <li><span class="box purple"></span> Fantasma</li>
+              <li><span class="box blue"></span> Multiball</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

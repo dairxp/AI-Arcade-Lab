@@ -1,0 +1,31 @@
+# Frontend (Node / Vite)
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/.env
+frontend/.env.*
+frontend/.env.*.local
+*.local
+
+# Backend (Python)
+backend/venv/
+backend/env/
+backend/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Directorios de Entrenamiento de IA
+models/
+logs/
+results/
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
